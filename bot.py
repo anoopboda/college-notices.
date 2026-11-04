@@ -12,7 +12,21 @@ URLS = [
 ]
 STATE_FILE = "seen_notices.txt"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-MODEL_NAME = "gemini-3.0-flash"
+
+def get_working_model(client):
+    # Automatically finds the exact working Flash model on your API key
+    preferred = ["gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-2.5-flash"]
+    try:
+        available = [m.name.replace("models/", "") for m in client.models.list()]
+        for p in preferred:
+            if p in available:
+                return p
+        for a in available:
+            if "flash" in a and "image" not in a and "tts" not in a:
+                return a
+    except Exception:
+        pass
+    return "gemini-3-flash-preview"
 
 def get_latest_notices():
     notices = []
@@ -44,8 +58,7 @@ def get_latest_notices():
 
     return notices[:5]
 
-def read_and_summarize(title, link, context_text):
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+def read_and_summarize(client, model_name, title, link, context_text):
     prompt = (
         f"You are summarizing an official RGUKT college notice.\n"
         f"Notice Title/Context: {context_text}\n\n"
@@ -66,20 +79,20 @@ def read_and_summarize(title, link, context_text):
                 config=types.UploadFileConfig(mime_type="application/pdf")
             )
             response = client.models.generate_content(
-                model=MODEL_NAME,
+                model=model_name,
                 contents=[uploaded_doc, prompt]
             )
             return response.text
         else:
             page_text = BeautifulSoup(r.text, "html.parser").get_text(separator=" ", strip=True)[:12000]
             response = client.models.generate_content(
-                model=MODEL_NAME,
+                model=model_name,
                 contents=f"{prompt}\n\nFull Page Text:\n{page_text}"
             )
             return response.text
     except Exception:
         response = client.models.generate_content(
-            model=MODEL_NAME,
+            model=model_name,
             contents=prompt
         )
         return response.text
@@ -92,6 +105,10 @@ def send_telegram(message):
         requests.post(url, json={"chat_id": chat_id, "text": message[:4000]})
 
 def main():
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    model_name = get_working_model(client)
+    print(f"Using Gemini Model: {model_name}")
+
     seen = set()
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -104,7 +121,7 @@ def main():
     for title, link, context_text in reversed(notices):
         if link not in seen:
             print(f"Summarizing: {title}")
-            summary = read_and_summarize(title, link, context_text)
+            summary = read_and_summarize(client, model_name, title, link, context_text)
             alert_text = f"📢 RGUKT NOTICE:\n{title}\n\n{summary}\n\n🔗 Link: {link}"
             send_telegram(alert_text)
             seen.add(link)
