@@ -1,0 +1,41 @@
+name: College Notice AI Summarizer
+
+on:
+  schedule:
+    - cron: '0 */3 * * *' # Runs every 3 hours automatically
+  workflow_dispatch:      # Lets you click "Run workflow" manually to test
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check and Summarize Notices
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: python bot.py
+
+      - name: Save seen notices so it never repeats alerts
+        run: |
+          git config --global user.name "NoticeBot"
+          git config --global user.email "bot@noreply.github.com"
+          git add seen_notices.txt || true
+          git diff --staged --quiet || git commit -m "Update seen notices"
+          git push
