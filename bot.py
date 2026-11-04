@@ -27,6 +27,38 @@ def get_working_model(client):
         pass
     return "gemini-3-flash-preview"
 
+def send_telegram(message):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip().removeprefix("bot")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is empty in GitHub Secrets!")
+
+    # Check if token itself is valid
+    me = requests.get(f"https://api.telegram.org/bot{token}/getMe").json()
+    if not me.get("ok"):
+        raise RuntimeError(f"Invalid TELEGRAM_BOT_TOKEN! Telegram said: {me}")
+    print(f"Connected to Telegram Bot: @{me['result']['username']}")
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    resp = requests.post(url, json={"chat_id": chat_id, "text": message[:4000]})
+
+    # If Chat ID failed, grab it automatically from your latest message to the bot
+    if resp.status_code != 200:
+        print(f"Chat ID '{chat_id}' failed ({resp.text}). Trying auto-detect...")
+        updates = requests.get(f"https://api.telegram.org/bot{token}/getUpdates").json()
+        for res in reversed(updates.get("result", [])):
+            msg_obj = res.get("message") or res.get("edited_message") or res.get("my_chat_member") or {}
+            auto_id = msg_obj.get("chat", {}).get("id")
+            if auto_id:
+                print(f"Found Chat ID from your Telegram chat: {auto_id}")
+                resp = requests.post(url, json={"chat_id": auto_id, "text": message[:4000]})
+                break
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Telegram failed to send! Reason: {resp.text}")
+    print("SUCCESS: Message delivered to Telegram!")
+
 def get_latest_notices():
     notices = []
     seen_links = set()
@@ -96,42 +128,23 @@ def read_and_summarize(client, model_name, title, link, context_text):
         )
         return response.text
 
-def send_telegram(message):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip().removeprefix("bot")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-
-    if not token:
-        print("ERROR: TELEGRAM_BOT_TOKEN secret is empty!")
-        return
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    resp = requests.post(url, json={"chat_id": chat_id, "text": message[:4000]})
-
-    # If Chat ID had a typo, auto-detect it from your /start message!
-    if resp.status_code != 200:
-        print(f"Initial Telegram response ({resp.status_code}): {resp.text}")
-        updates = requests.get(f"https://api.telegram.org/bot{token}/getUpdates").json()
-        for res in reversed(updates.get("result", [])):
-            auto_id = res.get("message", {}).get("chat", {}).get("id")
-            if auto_id:
-                print(f"Auto-detected Chat ID: {auto_id}. Retrying...")
-                resp = requests.post(url, json={"chat_id": auto_id, "text": message[:4000]})
-                break
-
-    print(f"Telegram Delivery Status: {resp.status_code} - {resp.text[:200]}")
-
 def main():
+    seen = set()
+    is_first_run = not os.path.exists(STATE_FILE)
+    if not is_first_run:
+        with open(STATE_FILE, "r") as f:
+            seen = set(line.strip() for line in f)
+
+    # Send a startup test message if seen_notices.txt doesn't exist yet
+    if is_first_run:
+        send_telegram("✅ Your RGUKT College Notice Bot is connected and active! Fetching latest notices now...")
+
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
     model_name = get_working_model(client)
     print(f"Using Gemini Model: {model_name}")
 
-    seen = set()
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            seen = set(line.strip() for line in f)
-
     notices = get_latest_notices()
-    print(f"Found {len(notices)} notices to check.")
+    print(f"Found {len(notices)} notices on RGUKT website.")
     new_found = False
 
     for title, link, context_text in reversed(notices):
@@ -143,7 +156,7 @@ def main():
             seen.add(link)
             new_found = True
 
-    if new_found:
+    if new_found or is_first_run:
         with open(STATE_FILE, "w") as f:
             for item in seen:
                 f.write(f"{item}\n")
