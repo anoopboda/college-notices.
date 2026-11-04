@@ -14,7 +14,6 @@ STATE_FILE = "seen_notices.txt"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 def get_working_model(client):
-    # Automatically finds the exact working Flash model on your API key
     preferred = ["gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-2.5-flash"]
     try:
         available = [m.name.replace("models/", "") for m in client.models.list()]
@@ -98,14 +97,31 @@ def read_and_summarize(client, model_name, title, link, context_text):
         return response.text
 
 def send_telegram(message):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if token and chat_id:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": message[:4000]})
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip().removeprefix("bot")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+    if not token:
+        print("ERROR: TELEGRAM_BOT_TOKEN secret is empty!")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    resp = requests.post(url, json={"chat_id": chat_id, "text": message[:4000]})
+
+    # If Chat ID had a typo, auto-detect it from your /start message!
+    if resp.status_code != 200:
+        print(f"Initial Telegram response ({resp.status_code}): {resp.text}")
+        updates = requests.get(f"https://api.telegram.org/bot{token}/getUpdates").json()
+        for res in reversed(updates.get("result", [])):
+            auto_id = res.get("message", {}).get("chat", {}).get("id")
+            if auto_id:
+                print(f"Auto-detected Chat ID: {auto_id}. Retrying...")
+                resp = requests.post(url, json={"chat_id": auto_id, "text": message[:4000]})
+                break
+
+    print(f"Telegram Delivery Status: {resp.status_code} - {resp.text[:200]}")
 
 def main():
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
     model_name = get_working_model(client)
     print(f"Using Gemini Model: {model_name}")
 
